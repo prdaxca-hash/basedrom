@@ -1,17 +1,16 @@
-name: Download RestlessOS
+name: Download and Extract RestlessOS
 
 on:
   workflow_dispatch:
 
 jobs:
-  download:
+  download-extract-upload:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      actions: write
+      contents: write
 
     steps:
-      - name: Download RestlessOS image
+      - name: Download RestlessOS archive
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -19,16 +18,22 @@ jobs:
             'https://github.com/cawilliamson/treble_restlessos/releases/download/16.0.0-202606230923/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz' \
             -o 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz'
 
-      - name: Verify downloaded file
+      - name: Extract system.img
         run: |
           set -euo pipefail
-          test -s 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz'
-          ls -lh 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz'
+          xz -dk 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz'
+          mv 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img' 'dist/system.img'
+          test -s 'dist/system.img'
+          ls -lh 'dist/system.img'
 
-      - name: Upload image as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: RestlessOS-arm64-ab-16.0.0-202606230923
-          path: dist/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz
-          if-no-files-found: error
-          retention-days: 7
+      - name: Upload system.img to basedrom
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create 'restlessos-16.0.0-202606230923' \
+            --repo "$REPO" \
+            --title 'RestlessOS 16.0.0-202606230923' \
+            --notes 'Extracted system.img from RestlessOS-arm64-ab-16.0.0-202606230923.img.xz.' \
+            'dist/system.img'
