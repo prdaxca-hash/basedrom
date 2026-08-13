@@ -1,39 +1,62 @@
-name: Download and Extract RestlessOS
+name: Import RestlessOS system
 
 on:
   workflow_dispatch:
 
-jobs:
-  download-extract-upload:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+permissions:
+  contents: write
 
+jobs:
+  import-system:
+    runs-on: ubuntu-latest
     steps:
-      - name: Download RestlessOS archive
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install extraction tools
         run: |
           set -euo pipefail
-          mkdir -p dist
+          sudo apt-get update
+          sudo apt-get install -y xz-utils e2fsprogs
+
+      - name: Download RestlessOS image
+        run: |
+          set -euo pipefail
           curl -fL --retry 5 --retry-delay 5 \
             'https://github.com/cawilliamson/treble_restlessos/releases/download/16.0.0-202606230923/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz' \
-            -o 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz'
+            -o system.img.xz
 
-      - name: Extract system.img
+      - name: Extract system.img filesystem
         run: |
           set -euo pipefail
-          xz -dk 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz'
-          mv 'dist/RestlessOS-arm64-ab-16.0.0-202606230923.img' 'dist/system.img'
-          test -s 'dist/system.img'
-          ls -lh 'dist/system.img'
+          xz -d system.img.xz
+          file system.img
+          mkdir -p extracted
+          sudo mount -o loop,ro system.img extracted
+          sudo cp -a extracted/. imported-system/
+          sudo umount extracted
+          rm -f system.img
+          test -d imported-system
+          find imported-system -type f | wc -l
 
-      - name: Upload system.img to basedrom
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+      - name: Replace repository contents with system filesystem
         run: |
           set -euo pipefail
-          gh release create 'restlessos-16.0.0-202606230923' \
-            --repo "$REPO" \
-            --title 'RestlessOS 16.0.0-202606230923' \
-            --notes 'Extracted system.img from RestlessOS-arm64-ab-16.0.0-202606230923.img.xz.' \
-            'dist/system.img'
+          rm -rf -- ./* ./.[^.]* 2>/dev/null || true
+          cp -a imported-system/. .
+          rm -rf imported-system
+
+      - name: Commit system filesystem to repository
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Import RestlessOS system filesystem'
+          git push origin main
