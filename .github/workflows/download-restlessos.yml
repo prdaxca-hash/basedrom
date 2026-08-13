@@ -34,7 +34,7 @@ jobs:
           xz -d system.img.xz
           file system.img
           sudo mkdir -p /mnt/restlessos
-          sudo mount -o loop,ro system.img /mnt/restlessos
+          sudo mount -o loop,ro,nosuid,nodev system.img /mnt/restlessos
           sudo mkdir -p extracted
           sudo cp -a /mnt/restlessos/. extracted/
           sudo umount /mnt/restlessos
@@ -42,6 +42,16 @@ jobs:
           rm -f system.img
           test -d extracted
           find extracted -type f | wc -l
+
+      - name: Check repository compatibility
+        run: |
+          set -euo pipefail
+          oversized=$(find extracted -type f -size +100M -printf '%p\n' | head -20)
+          if [ -n "$oversized" ]; then
+            echo 'Files over GitHub regular-Git 100 MiB limit were found:' >&2
+            echo "$oversized" >&2
+            exit 1
+          fi
 
       - name: Replace repository contents with system filesystem
         run: |
