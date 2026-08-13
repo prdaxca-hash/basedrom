@@ -33,20 +33,22 @@ jobs:
           set -euo pipefail
           xz -d system.img.xz
           file system.img
-          mkdir -p extracted
-          sudo mount -o loop,ro system.img extracted
-          sudo cp -a extracted/. imported-system/
-          sudo umount extracted
+          sudo mkdir -p /mnt/restlessos
+          sudo mount -o loop,ro system.img /mnt/restlessos
+          sudo mkdir -p extracted
+          sudo cp -a /mnt/restlessos/. extracted/
+          sudo umount /mnt/restlessos
+          sudo chown -R "$(id -u):$(id -g)" extracted
           rm -f system.img
-          test -d imported-system
-          find imported-system -type f | wc -l
+          test -d extracted
+          find extracted -type f | wc -l
 
       - name: Replace repository contents with system filesystem
         run: |
           set -euo pipefail
-          rm -rf -- ./* ./.[^.]* 2>/dev/null || true
-          cp -a imported-system/. .
-          rm -rf imported-system
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name 'extracted' -exec rm -rf -- {} +
+          cp -a extracted/. .
+          rm -rf extracted
 
       - name: Commit system filesystem to repository
         run: |
