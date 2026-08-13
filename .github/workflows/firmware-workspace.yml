@@ -1,0 +1,47 @@
+name: Firmware Workspace
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FIRMWARE_URL: "https://REPLACE-WITH-ADVAN-X1-FIRMWARE-URL"
+
+jobs:
+  inspect-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl wget unzip xz-utils zstd p7zip-full android-sdk-libsparse-utils e2fsprogs lz4 lzip cpio file
+
+      - name: Download firmware
+        run: |
+          set -euo pipefail
+          test "$FIRMWARE_URL" != "https://REPLACE-WITH-ADVAN-X1-FIRMWARE-URL"
+          mkdir -p work/firmware
+          curl -fL --retry 5 --retry-delay 5 "$FIRMWARE_URL" -o work/firmware/firmware.bin
+          file work/firmware/firmware.bin
+
+      - name: Inspect firmware
+        run: |
+          set -euo pipefail
+          mkdir -p work/inspect
+          file work/firmware/firmware.bin | tee work/inspect/file.txt
+          7z l work/firmware/firmware.bin | tee work/inspect/7z-list.txt || true
+          strings -n 8 work/firmware/firmware.bin | grep -Ei 'boot|vendor|system|super|dtbo|scatter|lk|preloader|logo' | head -200 | tee work/inspect/strings.txt || true
+
+      - name: Upload inspection workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: advan-x1-firmware-workspace
+          path: work/inspect/
+          if-no-files-found: error
+          retention-days: 7
