@@ -1,0 +1,149 @@
+name: Build RezeOS from RestlessOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+# RestlessOS release selected by the user.
+env:
+  RESTLESSOS_URL: "https://github.com/cawilliamson/treble_restlessos/releases/download/16.0.0-202606230923/RestlessOS-arm64-ab-16.0.0-202606230923.img.xz"
+  LAWNCHAIR_URL: ""
+  FRAMEWORK_RES_URL: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install image tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y xz-utils e2fsprogs erofs-utils android-sdk-libsparse-utils file rsync python3
+
+      - name: Download RestlessOS image
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 5 "$RESTLESSOS_URL" -o work/restlessos.img.xz
+          mkdir -p work
+          xz -d work/restlessos.img.xz
+          file work/restlessos.img
+
+      - name: Extract RestlessOS filesystem
+        run: |
+          set -euo pipefail
+          mkdir -p work/mnt work/system
+          sudo mount -o loop,ro,nosuid,nodev work/restlessos.img work/mnt
+          sudo cp -a work/mnt/. work/system/
+          sudo umount work/mnt
+          sudo chown -R "$(id -u):$(id -g)" work/system
+
+      - name: Download Reze modifications
+        run: |
+          set -euo pipefail
+          mkdir -p work/mods
+          test -n "$LAWNCHAIR_URL" || { echo "Set LAWNCHAIR_URL to the Lawnchair APK URL."; exit 1; }
+          test -n "$FRAMEWORK_RES_URL" || { echo "Set FRAMEWORK_RES_URL to the modified framework-res.apk URL."; exit 1; }
+          curl -fL --retry 5 --retry-delay 5 "$LAWNCHAIR_URL" -o work/mods/Lawnchair.apk
+          curl -fL --retry 5 --retry-delay 5 "$FRAMEWORK_RES_URL" -o work/mods/framework-res.apk
+          file work/mods/Lawnchair.apk work/mods/framework-res.apk
+
+      - name: Verify framework-res before replacement
+        run: |
+          set -euo pipefail
+          test -f work/system/system/framework/framework-res.apk || test -f work/system/framework/framework-res.apk
+          mkdir -p work/verify/original work/verify/new
+          ORIG="work/system/system/framework/framework-res.apk"
+          [ -f "$ORIG" ] || ORIG="work/system/framework/framework-res.apk"
+          cp "$ORIG" work/verify/original/framework-res.apk
+          cp work/mods/framework-res.apk work/verify/new/framework-res.apk
+          python3 - <<'PY'
+          import zipfile, hashlib, os
+          orig='work/verify/original/framework-res.apk'
+          new='work/verify/new/framework-res.apk'
+          with zipfile.ZipFile(orig) as a, zipfile.ZipFile(new) as b:
+              for p in ['AndroidManifest.xml','resources.arsc']:
+                  if hashlib.sha256(a.read(p)).hexdigest() != hashlib.sha256(b.read(p)).hexdigest():
+                      raise SystemExit(f'{p} changed; refusing unsafe framework-res replacement')
+          print('framework-res manifest/resources.arsc unchanged')
+          PY
+
+      - name: Replace framework-res and add Lawnchair
+        run: |
+          set -euo pipefail
+          if [ -d work/system/system ]; then
+            SYS=work/system/system
+          else
+            SYS=work/system
+          fi
+          FW="$SYS/framework/framework-res.apk"
+          test -f "$FW"
+          cp -f work/mods/framework-res.apk "$FW"
+          mkdir -p "$SYS/app/Lawnchair"
+          cp -f work/mods/Lawnchair.apk "$SYS/app/Lawnchair/Lawnchair.apk"
+          chmod 0644 "$SYS/app/Lawnchair/Lawnchair.apk" "$FW"
+
+      - name: Validate Lawnchair package
+        run: |
+          set -euo pipefail
+          test -s work/system/system/app/Lawnchair/Lawnchair.apk 2>/dev/null || test -s work/system/app/Lawnchair/Lawnchair.apk
+          python3 - <<'PY'
+          import zipfile
+          p='work/mods/Lawnchair.apk'
+          with zipfile.ZipFile(p) as z:
+              z.testzip()
+              assert 'AndroidManifest.xml' in z.namelist()
+          print('Lawnchair APK is a readable ZIP/APK')
+          PY
+
+      - name: Verify only intended framework resource files changed
+        run: |
+          set -euo pipefail
+          echo 'Reze modification workspace:'
+          find work/system -path '*framework/framework-res.apk' -o -path '*app/Lawnchair/Lawnchair.apk' | sort
+
+      - name: Rebuild image
+        run: |
+          set -euo pipefail
+          mkdir -p work/out work/repack
+          # RestlessOS release image is currently inspected as a loop-mounted filesystem.
+          # Repack method depends on the actual filesystem type reported by `file`.
+          filetype=$(file -b work/restlessos.img)
+          echo "Filesystem: $filetype"
+          if echo "$filetype" | grep -qi 'ext4'; then
+            blocks=$(sudo tune2fs -l work/restlessos.img | awk -F': ' '/Block count:/ {print $2}')
+            bs=$(sudo tune2fs -l work/restlessos.img | awk -F': ' '/Block size:/ {print $2}')
+            used=$(sudo du -s -B 4096 work/system | awk '{print $1}')
+            size=$((blocks * bs))
+            truncate -s "$size" work/out/system.img
+            mkfs.ext4 -F work/out/system.img >/dev/null
+            mkdir -p work/repackmnt
+            sudo mount -o loop work/out/system.img work/repackmnt
+            sudo cp -a work/system/. work/repackmnt/
+            sudo umount work/repackmnt
+          else
+            echo 'Unsupported image filesystem for this generic workflow.' >&2
+            exit 1
+          fi
+
+      - name: Compress output
+        run: |
+          set -euo pipefail
+          xz -T0 -z -f work/out/system.img
+          sha256sum work/out/system.img.xz | tee work/out/SHA256SUMS
+
+      - name: Upload RezeOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rezeos-restlessos-arm64-ab
+          path: |
+            work/out/system.img.xz
+            work/out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
